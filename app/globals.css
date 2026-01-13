@@ -1,0 +1,17 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+body {
+  @apply bg-zinc-50 text-zinc-900;
+}
+
+/* Simple focus ring */
+:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
