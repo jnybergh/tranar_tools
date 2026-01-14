@@ -1,8 +1,11 @@
 import React from 'react'
 
-export function Card({ className = '', children }: { className?: string; children: React.ReactNode }) {
-  return <div className={`rounded-2xl bg-white shadow-sm border ${className}`}>{children}</div>
-}
+export const Card = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(
+  ({ className = '', ...props }, ref) => (
+    <div ref={ref} className={`rounded-2xl bg-white shadow-sm border ${className}`} {...props} />
+  )
+)
+Card.displayName = 'Card'
 
 export function Button({
   className = '',
