@@ -1,391 +1,337 @@
-'use client'
+"use client";
 
-import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { Badge, Button, Card, Checkbox, Input } from '../components/ui'
-import { computeGoalieStats } from '../lib/goalies'
-import { loadDraft, loadPlayers, loadSessions, savePlayers, saveSessions, clearDraft } from '../lib/storage'
-import type { LockState, Player, Session, TeamKey, TeamSplit } from '../lib/types'
-import { randomizeTeams } from '../lib/randomize'
-import { textExport, todayISO, uid } from '../lib/utils'
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Card, Button, Input } from "../../components/ui";
+import type { Player, Split, TeamSide, TrainingSession } from "../../lib/types";
+import { clearDraft, loadDraft, loadPlayers, loadSessions, saveDraft, saveSession } from "../../lib/storage";
+import { displayName, getTodayISO } from "../../lib/utils";
+import { buildSplit, formatClipboard } from "../../lib/team";
 
-type DragPayload = { id: string; from: 'pool' | 'A' | 'B' }
-
-function nameOf(p: Player) {
-  return `${p.firstName} ${p.lastInitial}.`
-}
+type DragPayload = { playerId: string; from: TeamSide };
 
 export default function TrainingPage() {
-  const [players, setPlayers] = useState<Player[]>([])
-  const [sessions, setSessions] = useState<Session[]>([])
+  const [players, setPlayers] = useState<Player[]>([]);
+  const [sessions, setSessions] = useState<TrainingSession[]>([]);
 
-  const [locks, setLocks] = useState<LockState>({})
-  const [split, setSplit] = useState<TeamSplit>({ teamA: [], teamB: [] })
-  const [goalies, setGoalies] = useState<{ A?: string; B?: string }>({})
-  const [warnings, setWarnings] = useState<string[]>([])
+  const [split, setSplit] = useState<Split>({ red: [], black: [] });
+  const [locked, setLocked] = useState<Record<string, boolean>>({});
+  const [note, setNote] = useState("");
 
-  const [dateISO, setDateISO] = useState(todayISO())
-  const [note, setNote] = useState('')
-
-  const dragRef = useRef<DragPayload | null>(null)
+  const [status, setStatus] = useState<string>("");
+  const timer = useRef<number | null>(null);
 
   useEffect(() => {
-    const p = loadPlayers()
-    const s = loadSessions().slice().sort((a, b) => b.createdAt - a.createdAt)
-    setPlayers(p)
-    setSessions(s)
+    const p = loadPlayers();
+    const s = loadSessions();
+    setPlayers(p);
+    setSessions(s);
 
-    const draft = loadDraft()
-    if (draft?.split) {
-      setSplit(draft.split)
-      setGoalies(draft.goalies ?? {})
-      clearDraft()
-    }
-  }, [])
+    const draft = loadDraft();
+    if (draft) setSplit(draft);
+  }, []);
 
   useEffect(() => {
-    savePlayers(players)
-  }, [players])
+    saveDraft(split);
+  }, [split]);
 
-  useEffect(() => {
-    saveSessions(sessions)
-  }, [sessions])
+  const availablePlayers = useMemo(() => players.filter((p) => p.availableToday), [players]);
 
-  const selectedPlayers = useMemo(() => players.filter((p) => p.activeToday), [players])
-  const selectedIds = useMemo(() => selectedPlayers.map((p) => p.id), [selectedPlayers])
+  const idToPlayer = useMemo(() => new Map(players.map((p) => [p.id, p])), [players]);
 
-  const goalieStats = useMemo(() => computeGoalieStats(players, sessions), [players, sessions])
-  const avoidSplits = useMemo(() => sessions.slice(0, 2).map((x) => x.split), [sessions])
+  const poolIds = useMemo(() => {
+    const inRed = new Set(split.red);
+    const inBlack = new Set(split.black);
+    return availablePlayers.map((p) => p.id).filter((id) => !inRed.has(id) && !inBlack.has(id));
+  }, [availablePlayers, split]);
 
-  const byId = useMemo(() => {
-    const m = new Map<string, Player>()
-    for (const p of players) m.set(p.id, p)
-    return m
-  }, [players])
-
-  const teamAPlayers = useMemo(
-    () => split.teamA.map((id) => byId.get(id)).filter(Boolean) as Player[],
-    [split, byId]
-  )
-  const teamBPlayers = useMemo(
-    () => split.teamB.map((id) => byId.get(id)).filter(Boolean) as Player[],
-    [split, byId]
-  )
-  const poolPlayers = useMemo(() => {
-    const inTeams = new Set([...split.teamA, ...split.teamB])
-    return selectedPlayers.filter((p) => !inTeams.has(p.id))
-  }, [selectedPlayers, split])
-
-  function setActiveToday(id: string, v: boolean) {
-    setPlayers((prev) =>
-      prev.map((p) => (p.id === id ? { ...p, activeToday: v } : p))
-    )
-    if (!v) {
-      setSplit((cur) => ({
-        teamA: cur.teamA.filter((x) => x !== id),
-        teamB: cur.teamB.filter((x) => x !== id)
-      }))
-      setLocks((cur) => {
-        const { [id]: _, ...rest } = cur
-        return rest
-      })
-      setGoalies((cur) => {
-        const next = { ...cur }
-        if (next.A === id) delete next.A
-        if (next.B === id) delete next.B
-        return next
-      })
-    }
+  function flash(msg: string) {
+    setStatus(msg);
+    if (timer.current) window.clearTimeout(timer.current);
+    timer.current = window.setTimeout(() => setStatus(""), 2600);
   }
 
-  function randomize() {
-    if (selectedIds.length < 2) {
-      setWarnings(['Välj minst två spelare (Med idag) för att kunna slumpa.'])
-      return
-    }
-    const res = randomizeTeams({
-      selectedPlayerIds: selectedIds,
-      players,
-      locks,
-      avoidSplits,
-      goalieStats
-    })
-    setSplit(res.split)
-    setGoalies(res.goalies)
-    setWarnings(res.warnings)
-  }
-
-  function clearTeams() {
-    setSplit({ teamA: [], teamB: [] })
-    setGoalies({})
-    setWarnings([])
-    setLocks({})
-  }
-
-  async function copyTeams() {
-    const A = teamAPlayers.map(nameOf)
-    const B = teamBPlayers.map(nameOf)
-    const text = textExport({ teamAName: 'Lag Röd', teamBName: 'Lag Svart', teamA: A, teamB: B })
-    try {
-      await navigator.clipboard.writeText(text)
-      setWarnings(['Kopierat till urklipp.'])
-    } catch {
-      setWarnings(['Kunde inte kopiera (blockerat av webbläsaren?).'])
-    }
-  }
-
-  function saveTraining() {
-    if (split.teamA.length === 0 && split.teamB.length === 0) {
-      setWarnings(['Det finns inga lag att spara än.'])
-      return
-    }
-    const s: Session = {
-      id: uid('sess'),
-      createdAt: Date.now(),
-      dateISO,
-      note: note.trim() || undefined,
-      split,
-      goalies
-    }
-    setSessions((prev) => [s, ...prev].slice(0, 40))
-    setWarnings(['Träningen sparades i historiken.'])
-  }
-
-  function onDragStart(id: string, from: DragPayload['from']) {
-    dragRef.current = { id, from }
-  }
-
-  function onDrop(e: React.DragEvent, to: DragPayload['from']) {
-    e.preventDefault()
-    const payload = dragRef.current
-    if (!payload) return
-    const { id, from } = payload
-    dragRef.current = null
-    if (from === to) return
-
-    setSplit((cur) => {
-      const nextA = cur.teamA.filter((x) => x !== id)
-      const nextB = cur.teamB.filter((x) => x !== id)
-      if (to === 'A') nextA.push(id)
-      if (to === 'B') nextB.push(id)
-      return { teamA: nextA, teamB: nextB }
-    })
-
-    // Moving implies intended assignment; set lock when moved into a team.
-    if (to === 'A' || to === 'B') {
-      setLocks((cur) => ({ ...cur, [id]: to }))
-    } else {
-      setLocks((cur) => ({ ...cur, [id]: null }))
-    }
+  function toggleLock(id: string) {
+    setLocked((prev) => ({ ...prev, [id]: !prev[id] }));
   }
 
   function allowDrop(e: React.DragEvent) {
-    e.preventDefault()
+    e.preventDefault();
   }
 
-  function toggleLock(id: string, team: TeamKey) {
-    setLocks((cur) => ({ ...cur, [id]: cur[id] === team ? null : team }))
+  function onDragStart(e: React.DragEvent, payload: DragPayload) {
+    e.dataTransfer.setData("application/json", JSON.stringify(payload));
+    e.dataTransfer.effectAllowed = "move";
   }
 
-  const selectedGoalieCount = useMemo(
-    () => selectedPlayers.filter((p) => p.canGoalie).length,
-    [selectedPlayers]
-  )
+  function onDropTo(side: TeamSide, e: React.DragEvent) {
+    e.preventDefault();
+    const raw = e.dataTransfer.getData("application/json");
+    if (!raw) return;
+    let payload: DragPayload;
+    try {
+      payload = JSON.parse(raw) as DragPayload;
+    } catch {
+      return;
+    }
+
+    const { playerId, from } = payload;
+
+    // remove from origin
+    if (from === "red") setSplit((prev) => ({ ...prev, red: prev.red.filter((x) => x !== playerId) }));
+    if (from === "black") setSplit((prev) => ({ ...prev, black: prev.black.filter((x) => x !== playerId) }));
+
+    // add to target
+    if (side === "red") setSplit((prev) => ({ ...prev, red: prev.red.includes(playerId) ? prev.red : [...prev.red, playerId] }));
+    if (side === "black") setSplit((prev) => ({ ...prev, black: prev.black.includes(playerId) ? prev.black : [...prev.black, playerId] }));
+    if (side === "pool") {
+      // nothing else: dropping to pool means it isn't in a team
+    }
+
+    flash("Flyttad.");
+  }
+
+  function randomize() {
+    if (availablePlayers.length < 2) return flash("För få spelare markerade som tillgängliga idag.");
+    const res = buildSplit({ players, sessions, current: split, locked });
+    setSplit(res.split);
+    if (res.warning) flash(res.warning);
+    else flash("Nya lag slumpade.");
+  }
+
+  async function copyClipboard() {
+    const text = formatClipboard({ split, idToPlayer });
+    try {
+      await navigator.clipboard.writeText(text);
+      flash("Kopierat till urklipp.");
+    } catch {
+      flash("Kunde inte kopiera (webbläsaren blockerade).");
+    }
+  }
+
+  function reset() {
+    setSplit({ red: [], black: [] });
+    setLocked({});
+    clearDraft();
+    flash("Rensat.");
+  }
+
+  function save() {
+    if (split.red.length === 0 && split.black.length === 0) return flash("Inga lag att spara.");
+    const session: TrainingSession = {
+      id: crypto.randomUUID(),
+      dateISO: getTodayISO(),
+      note: note.trim() || undefined,
+      split
+    };
+    const next = saveSession(session);
+    setSessions(next);
+    setNote("");
+    flash("Sparat i historik.");
+  }
+
+  const goalieRed = split.goalieRedId ? idToPlayer.get(split.goalieRedId) : undefined;
+  const goalieBlack = split.goalieBlackId ? idToPlayer.get(split.goalieBlackId) : undefined;
 
   return (
-    <div className="space-y-6">
-      <Card className="p-4">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <div className="text-base font-semibold">Träning</div>
-              <Badge>{selectedPlayers.length} med idag</Badge>
-              <Badge>{selectedGoalieCount} målvaktskandidater</Badge>
-            </div>
-            <div className="mt-1 text-xs text-zinc-400">
-              Slumpen väljer målvakter rättvist (minst gånger + längst senast) och delar sedan lagen.
-            </div>
+    <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+      <Card className="p-4 lg:col-span-2">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <h1 className="text-base font-semibold">Träning</h1>
+            <p className="text-sm text-slate-400">
+              Slumpa lag med rättvis målvaktsrotation. Dra spelare mellan lag och lås vid behov.
+            </p>
           </div>
-
-          <div className="flex flex-wrap gap-2 justify-start sm:justify-end">
+          <div className="flex flex-wrap gap-2">
             <Button onClick={randomize}>Slumpa lag</Button>
-            <Button variant="secondary" onClick={copyTeams}>Kopiera</Button>
-            <Button variant="secondary" onClick={saveTraining}>Spara</Button>
-            <Button variant="secondary" onClick={clearTeams}>Rensa</Button>
+            <Button variant="secondary" onClick={copyClipboard}>Kopiera</Button>
+            <Button variant="secondary" onClick={reset}>Rensa</Button>
+            <Button onClick={save}>Spara</Button>
           </div>
         </div>
 
-        <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-3">
-          <div className="sm:col-span-1">
-            <label className="text-xs text-zinc-400">Datum</label>
-            <Input value={dateISO} onChange={(e) => setDateISO(e.target.value)} placeholder="YYYY-MM-DD" />
-          </div>
-          <div className="sm:col-span-2">
-            <label className="text-xs text-zinc-400">Anteckning (valfritt)</label>
-            <Input value={note} onChange={(e) => setNote(e.target.value)} placeholder="t.ex. fokus: passningar" />
-          </div>
-        </div>
-
-        {warnings.length > 0 ? (
-          <div className="mt-4 space-y-2">
-            {warnings.map((w, i) => (
-              <div key={i} className="rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-sm text-zinc-200">
-                {w}
-              </div>
-            ))}
+        {status ? (
+          <div className="mt-3 rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-sm text-slate-200">
+            {status}
           </div>
         ) : null}
+
+        <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
+          <Card
+            className="p-4"
+            onDragOver={allowDrop}
+            onDrop={(e) => onDropTo("red", e)}
+          >
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <h2 className="text-sm font-semibold">Lag Röd</h2>
+                <div className="text-xs text-slate-400">{split.red.length} spelare</div>
+              </div>
+              <div className="rounded-full bg-red-500/20 px-2 py-1 text-xs text-red-100">Röd</div>
+            </div>
+
+            <div className="mt-3 grid gap-2">
+              {split.red.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-white/10 px-3 py-2 text-sm text-slate-400">
+                  Dra spelare hit eller klicka “Slumpa lag”.
+                </div>
+              ) : (
+                split.red.map((id) => (
+                  <PlayerChip
+                    key={id}
+                    id={id}
+                    player={idToPlayer.get(id)}
+                    isGoalie={id === split.goalieRedId}
+                    locked={!!locked[id]}
+                    onToggleLock={() => toggleLock(id)}
+                    onDragStart={(e) => onDragStart(e, { playerId: id, from: "red" })}
+                  />
+                ))
+              )}
+            </div>
+
+            <div className="mt-3 text-xs text-slate-400">
+              Målvakt: {goalieRed ? displayName(goalieRed) : "—"}
+            </div>
+          </Card>
+
+          <Card
+            className="p-4"
+            onDragOver={allowDrop}
+            onDrop={(e) => onDropTo("black", e)}
+          >
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <h2 className="text-sm font-semibold">Lag Svart</h2>
+                <div className="text-xs text-slate-400">{split.black.length} spelare</div>
+              </div>
+              <div className="rounded-full bg-slate-800/80 px-2 py-1 text-xs text-slate-100 border border-white/10">
+                Svart
+              </div>
+            </div>
+
+            <div className="mt-3 grid gap-2">
+              {split.black.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-white/10 px-3 py-2 text-sm text-slate-400">
+                  Dra spelare hit eller klicka “Slumpa lag”.
+                </div>
+              ) : (
+                split.black.map((id) => (
+                  <PlayerChip
+                    key={id}
+                    id={id}
+                    player={idToPlayer.get(id)}
+                    isGoalie={id === split.goalieBlackId}
+                    locked={!!locked[id]}
+                    onToggleLock={() => toggleLock(id)}
+                    onDragStart={(e) => onDragStart(e, { playerId: id, from: "black" })}
+                  />
+                ))
+              )}
+            </div>
+
+            <div className="mt-3 text-xs text-slate-400">
+              Målvakt: {goalieBlack ? displayName(goalieBlack) : "—"}
+            </div>
+          </Card>
+        </div>
+
+        <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <div className="text-xs text-slate-400">
+            Tips: Klicka 🔒 för att låsa en spelare i laget innan du slumpa om.
+          </div>
+          <div className="w-full sm:max-w-md">
+            <Input
+              placeholder="Anteckning (valfritt), t.ex. fokus: passningar"
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+            />
+          </div>
+        </div>
       </Card>
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-        <Card className="p-4" onDragOver={allowDrop} onDrop={(e) => onDrop(e, 'A')}>
-          <div className="flex items-start justify-between gap-2">
-            <div>
-              <h2 className="text-sm font-semibold text-red-200">Lag Röd</h2>
-              <div className="text-xs text-zinc-400">{teamAPlayers.length} spelare</div>
-            </div>
-            {goalies.A ? (
-              <Badge>MV: {byId.get(goalies.A)?.firstName ?? '—'}</Badge>
-            ) : (
-              <Badge>MV: —</Badge>
-            )}
+      <Card
+        className="p-4"
+        onDragOver={allowDrop}
+        onDrop={(e) => onDropTo("pool", e)}
+      >
+        <div className="flex items-start justify-between gap-2">
+          <div>
+            <h2 className="text-sm font-semibold">Utanför lag</h2>
+            <div className="text-xs text-slate-400">{poolIds.length} spelare</div>
           </div>
+          <div className="text-xs text-slate-400">Dra hit för att ta ur lag</div>
+        </div>
 
-          <TeamList
-            team="A"
-            players={teamAPlayers}
-            locks={locks}
-            onDragStart={onDragStart}
-            onToggleLock={toggleLock}
-            goalieId={goalies.A}
-          />
-        </Card>
-
-        <Card className="p-4" onDragOver={allowDrop} onDrop={(e) => onDrop(e, 'B')}>
-          <div className="flex items-start justify-between gap-2">
-            <div>
-              <h2 className="text-sm font-semibold text-zinc-100">Lag Svart</h2>
-              <div className="text-xs text-zinc-400">{teamBPlayers.length} spelare</div>
+        <div className="mt-3 grid gap-2">
+          {poolIds.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-white/10 px-3 py-2 text-sm text-slate-400">
+              Alla tillgängliga spelare är i lag.
             </div>
-            {goalies.B ? (
-              <Badge>MV: {byId.get(goalies.B)?.firstName ?? '—'}</Badge>
-            ) : (
-              <Badge>MV: —</Badge>
-            )}
-          </div>
-
-          <TeamList
-            team="B"
-            players={teamBPlayers}
-            locks={locks}
-            onDragStart={onDragStart}
-            onToggleLock={toggleLock}
-            goalieId={goalies.B}
-          />
-        </Card>
-
-        <Card className="p-4" onDragOver={allowDrop} onDrop={(e) => onDrop(e, 'pool')}>
-          <div className="flex items-start justify-between gap-2">
-            <div>
-              <h2 className="text-sm font-semibold">Utanför lag</h2>
-              <div className="text-xs text-zinc-400">{poolPlayers.length} spelare</div>
-            </div>
-          </div>
-
-          <div className="mt-3 space-y-2">
-            {poolPlayers.length === 0 ? (
-              <div className="rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-sm text-zinc-400">
-                Inga spelare utanför lagen.
-              </div>
-            ) : (
-              poolPlayers.map((p) => (
-                <div
-                  key={p.id}
-                  draggable
-                  onDragStart={() => onDragStart(p.id, 'pool')}
-                  className="flex items-center justify-between gap-2 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm hover:bg-white/10"
-                >
-                  <span className="truncate">{nameOf(p)}</span>
-                  <span className="flex items-center gap-2">
-                    {p.canGoalie ? <Badge>MV-kand</Badge> : null}
+          ) : (
+            poolIds.map((id) => (
+              <div
+                key={id}
+                draggable
+                onDragStart={(e) => onDragStart(e, { playerId: id, from: "pool" })}
+                className="flex items-center justify-between rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm"
+              >
+                <span className="truncate">{idToPlayer.get(id) ? displayName(idToPlayer.get(id)!) : "Okänd"}</span>
+                {id === split.goalieRedId || id === split.goalieBlackId ? (
+                  <span className="ml-2 rounded-full border border-white/10 bg-black/20 px-2 py-0.5 text-xs text-slate-200">
+                    MV
                   </span>
-                </div>
-              ))
-            )}
-          </div>
-
-          <details className="mt-4">
-            <summary className="cursor-pointer select-none text-sm text-zinc-200">Dagens spelare</summary>
-            <div className="mt-3 space-y-2">
-              {players
-                .slice()
-                .sort((a, b) => (a.firstName + a.lastInitial).localeCompare(b.firstName + b.lastInitial, 'sv'))
-                .map((p) => (
-                  <div key={p.id} className="flex items-center justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="truncate text-sm">{nameOf(p)}</div>
-                      <div className="text-xs text-zinc-500">
-                        {p.canGoalie ? 'Målvaktskandidat' : 'Utespelare'}
-                      </div>
-                    </div>
-                    <Checkbox label="Med" checked={p.activeToday} onChange={(v) => setActiveToday(p.id, v)} />
-                  </div>
-                ))}
-            </div>
-          </details>
-        </Card>
-      </div>
+                ) : null}
+              </div>
+            ))
+          )}
+        </div>
+      </Card>
     </div>
-  )
+  );
 }
 
-function TeamList({
-  team,
-  players,
-  locks,
-  onDragStart,
+function PlayerChip({
+  player,
+  isGoalie,
+  locked,
   onToggleLock,
-  goalieId
+  onDragStart
 }: {
-  team: TeamKey
-  players: Player[]
-  locks: LockState
-  onDragStart: (id: string, from: 'A' | 'B') => void
-  onToggleLock: (id: string, team: TeamKey) => void
-  goalieId?: string
+  id: string;
+  player?: Player;
+  isGoalie: boolean;
+  locked: boolean;
+  onToggleLock: () => void;
+  onDragStart: (e: React.DragEvent) => void;
 }) {
+  const name = player ? displayName(player) : "Okänd";
   return (
-    <div className="mt-3 space-y-2">
-      {players.length === 0 ? (
-        <div className="rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-sm text-zinc-400">
-          Dra spelare hit eller klicka “Slumpa lag”.
-        </div>
-      ) : (
-        players.map((p) => {
-          const locked = locks[p.id] === team
-          const isGoalieToday = goalieId === p.id
-          return (
-            <div
-              key={p.id}
-              draggable
-              onDragStart={() => onDragStart(p.id, team)}
-              className="flex items-center justify-between gap-2 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm hover:bg-white/10"
-            >
-              <div className="min-w-0 truncate">{nameOf(p)}</div>
-              <div className="flex items-center gap-2">
-                {isGoalieToday ? <Badge>MV</Badge> : null}
-                <button
-                  type="button"
-                  onClick={() => onToggleLock(p.id, team)}
-                  className="rounded-lg border border-white/10 bg-black/20 px-2 py-1 text-xs text-zinc-200 hover:bg-black/30"
-                  title={locked ? 'Låst i laget' : 'Lås i laget'}
-                >
-                  {locked ? '🔒' : '🔓'}
-                </button>
-              </div>
-            </div>
-          )
-        })
-      )}
+    <div
+      draggable
+      onDragStart={onDragStart}
+      className={[
+        "flex items-center justify-between gap-2 rounded-xl border px-3 py-2 text-sm",
+        locked ? "border-white/20 bg-white/10" : "border-white/10 bg-white/5"
+      ].join(" ")}
+    >
+      <span className="truncate">{name}</span>
+      <span className="flex items-center gap-2">
+        {isGoalie ? (
+          <span className="rounded-full border border-white/10 bg-black/20 px-2 py-0.5 text-xs text-slate-200">
+            MV
+          </span>
+        ) : null}
+        <button
+          type="button"
+          onClick={onToggleLock}
+          className="rounded-lg border border-white/10 bg-black/20 px-2 py-1 text-xs hover:bg-black/30"
+          title={locked ? "Låst" : "Lås"}
+          aria-label={locked ? "Låst" : "Lås"}
+        >
+          {locked ? "🔒" : "🔓"}
+        </button>
+      </span>
     </div>
-  )
+  );
 }

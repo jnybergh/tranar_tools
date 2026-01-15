@@ -1,109 +1,107 @@
-'use client'
+"use client";
 
-import React, { useEffect, useMemo, useState } from 'react'
-import { Badge, Button, Card } from '../components/ui'
-import { loadPlayers, loadSessions, saveSessions, saveDraft } from '../lib/storage'
-import type { Player, Session } from '../lib/types'
-
-function label(p: Player) {
-  return `${p.firstName} ${p.lastInitial}.`
-}
+import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
+import { Card, Button } from "../../components/ui";
+import type { Player, TrainingSession } from "../../lib/types";
+import { deleteSession, loadPlayers, loadSessions, saveDraft } from "../../lib/storage";
+import { displayName } from "../../lib/utils";
 
 export default function HistoryPage() {
-  const [players, setPlayers] = useState<Player[]>([])
-  const [sessions, setSessions] = useState<Session[]>([])
+  const [players, setPlayers] = useState<Player[]>([]);
+  const [sessions, setSessions] = useState<TrainingSession[]>([]);
 
   useEffect(() => {
-    setPlayers(loadPlayers())
-    setSessions(loadSessions().slice().sort((a, b) => b.createdAt - a.createdAt))
-  }, [])
+    setPlayers(loadPlayers());
+    setSessions(loadSessions());
+  }, []);
 
-  useEffect(() => {
-    saveSessions(sessions)
-  }, [sessions])
+  const idToPlayer = useMemo(() => new Map(players.map((p) => [p.id, p])), [players]);
 
-  const byId = useMemo(() => {
-    const m = new Map<string, Player>()
-    for (const p of players) m.set(p.id, p)
-    return m
-  }, [players])
-
-  function removeSession(id: string) {
-    setSessions((prev) => prev.filter((s) => s.id !== id))
-  }
-
-  function useSession(s: Session) {
-    saveDraft({ split: s.split, goalies: s.goalies })
-    window.location.href = '/training'
+  function name(id: string) {
+    const p = idToPlayer.get(id);
+    return p ? displayName(p) : "Okänd";
   }
 
   return (
-    <div className="space-y-6">
+    <div className="grid grid-cols-1 gap-4">
       <Card className="p-4">
-        <div className="flex items-center justify-between">
+        <div className="flex items-start justify-between gap-2">
           <div>
-            <div className="text-base font-semibold">Historik</div>
-            <div className="mt-1 text-xs text-zinc-400">Sparade träningar (senaste först).</div>
+            <h1 className="text-base font-semibold">Historik</h1>
+            <p className="text-sm text-slate-400">Sparade träningar. Du kan visa eller återanvända en tidigare indelning.</p>
           </div>
-          <Badge>{sessions.length} sparade</Badge>
+          <Link
+            href="/training"
+            className="rounded-xl border border-white/10 bg-white/10 px-3 py-2 text-sm font-medium hover:bg-white/15"
+          >
+            Till Träning
+          </Link>
         </div>
       </Card>
 
-      <div className="space-y-4">
-        {sessions.length === 0 ? (
-          <Card className="p-4">
-            <div className="text-sm text-zinc-400">Inga sparade träningar än. Gå till Träning och klicka “Spara”.</div>
-          </Card>
-        ) : (
-          sessions.map((s) => {
-            const teamA = s.split.teamA.map((id) => byId.get(id)).filter(Boolean) as Player[]
-            const teamB = s.split.teamB.map((id) => byId.get(id)).filter(Boolean) as Player[]
-            return (
-              <Card key={s.id} className="p-4">
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                  <div>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <div className="text-sm font-semibold">{s.dateISO}</div>
-                      {s.note ? <Badge>{s.note}</Badge> : null}
-                      <Badge>{teamA.length + teamB.length} spelare</Badge>
-                    </div>
-                    <div className="mt-1 text-xs text-zinc-400">
-                      MV: {s.goalies?.A && byId.get(s.goalies.A) ? label(byId.get(s.goalies.A) as Player) : '—'} (Röd) •{' '}
-                      {s.goalies?.B && byId.get(s.goalies.B) ? label(byId.get(s.goalies.B) as Player) : '—'} (Svart)
-                    </div>
-                  </div>
-
-                  <div className="flex flex-wrap gap-2">
-                    <Button onClick={() => useSession(s)}>Använd igen</Button>
-                    <Button variant="secondary" onClick={() => removeSession(s.id)}>
-                      Ta bort
-                    </Button>
+      {sessions.length === 0 ? (
+        <Card className="p-4">
+          <div className="text-sm text-slate-400">Ingen historik ännu. Gå till Träning och klicka “Spara”.</div>
+        </Card>
+      ) : (
+        <div className="grid gap-3">
+          {sessions.map((s) => (
+            <Card key={s.id} className="p-4">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <div className="text-sm font-semibold">{s.dateISO}</div>
+                  {s.note ? <div className="text-sm text-slate-400">{s.note}</div> : null}
+                  <div className="mt-2 text-xs text-slate-400">
+                    MV Röd: {s.split.goalieRedId ? name(s.split.goalieRedId) : "—"} • MV Svart:{" "}
+                    {s.split.goalieBlackId ? name(s.split.goalieBlackId) : "—"}
                   </div>
                 </div>
 
-                <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
-                  <div>
-                    <div className="text-xs font-semibold text-red-200">Lag Röd</div>
-                    <div className="mt-2 text-sm text-zinc-200 space-y-1">
-                      {teamA.map((p) => (
-                        <div key={p.id}>• {label(p)}</div>
-                      ))}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-xs font-semibold text-zinc-100">Lag Svart</div>
-                    <div className="mt-2 text-sm text-zinc-200 space-y-1">
-                      {teamB.map((p) => (
-                        <div key={p.id}>• {label(p)}</div>
-                      ))}
-                    </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    variant="secondary"
+                    onClick={() => {
+                      saveDraft(s.split);
+                      window.location.href = "/training";
+                    }}
+                  >
+                    Använd igen
+                  </Button>
+                  <Button
+                    variant="danger"
+                    onClick={() => {
+                      const next = deleteSession(s.id);
+                      setSessions(next);
+                    }}
+                  >
+                    Ta bort
+                  </Button>
+                </div>
+              </div>
+
+              <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
+                <div>
+                  <div className="mb-1 text-xs font-semibold text-red-200/90">Lag Röd</div>
+                  <div className="grid gap-1 text-sm text-slate-300">
+                    {s.split.red.map((id) => (
+                      <div key={id}>{name(id)}</div>
+                    ))}
                   </div>
                 </div>
-              </Card>
-            )
-          })
-        )}
-      </div>
+                <div>
+                  <div className="mb-1 text-xs font-semibold text-slate-200">Lag Svart</div>
+                  <div className="grid gap-1 text-sm text-slate-300">
+                    {s.split.black.map((id) => (
+                      <div key={id}>{name(id)}</div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </Card>
+          ))}
+        </div>
+      )}
     </div>
-  )
+  );
 }
