@@ -3,11 +3,11 @@
 @tailwind utilities;
 
 :root {
-  color-scheme: light;
+  color-scheme: dark;
 }
 
 body {
-  @apply bg-zinc-50 text-zinc-900;
+  @apply bg-zinc-950 text-zinc-50;
 }
 
 /* Simple focus ring */

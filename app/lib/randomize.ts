@@ -1,4 +1,4 @@
-import { LockState, Player, TeamKey, TeamSplit } from './types'
+import { GoalieStats, LockState, Player, TeamSplit } from './types'
 
 function mulberry32(seed: number) {
   let a = seed >>> 0
@@ -46,27 +46,29 @@ export type RandomizeArgs = {
   players: Player[]
   locks: LockState
   avoidSplits: TeamSplit[]
+  goalieStats: Record<string, GoalieStats>
   maxAttempts?: number
   seed?: number
 }
 
 export type RandomizeResult = {
   split: TeamSplit
+  goalies: { A?: string; B?: string }
   seed: number
   warnings: string[]
 }
 
 export function randomizeTeams(args: RandomizeArgs): RandomizeResult {
-  const { selectedPlayerIds, players, locks, avoidSplits } = args
+  const { selectedPlayerIds, players, locks, avoidSplits, goalieStats } = args
   const maxAttempts = args.maxAttempts ?? 60
   const warnings: string[] = []
 
   const selected = new Set(selectedPlayerIds)
   const selectedPlayers = players.filter((p) => selected.has(p.id))
 
-  const goalies = selectedPlayers.filter((p) => p.isGoalie)
-  if (goalies.length < 2) {
-    warnings.push('Mindre än 2 målvakter markerade bland dagens spelare. Jag försöker ändå dela så bra som möjligt.')
+  const goalieCandidates = selectedPlayers.filter((p) => p.canGoalie)
+  if (goalieCandidates.length < 2) {
+    warnings.push('Mindre än 2 målvaktskandidater bland dagens spelare. Jag försöker ändå dela så bra som möjligt.')
   }
 
   const baseSeed = (args.seed ?? Date.now()) >>> 0
@@ -82,48 +84,61 @@ export function randomizeTeams(args: RandomizeArgs): RandomizeResult {
 
     const freePlayers = selectedPlayers.filter((p) => !usedLocked.has(p.id))
 
-    // Goalies: ensure one per team when possible
-    const lockedGoaliesA = lockedA.filter((id) => players.find((p) => p.id === id)?.isGoalie)
-    const lockedGoaliesB = lockedB.filter((id) => players.find((p) => p.id === id)?.isGoalie)
+    // Goalies: ensure one per team when possible (fair rotation)
+    const lockedGoaliesA = lockedA.filter((id) => players.find((p) => p.id === id)?.canGoalie)
+    const lockedGoaliesB = lockedB.filter((id) => players.find((p) => p.id === id)?.canGoalie)
 
     let teamA: string[] = [...lockedA]
     let teamB: string[] = [...lockedB]
 
-    const freeGoalies = freePlayers.filter((p) => p.isGoalie).map((p) => p.id)
-    const freeSkaters = freePlayers.filter((p) => !p.isGoalie).map((p) => p.id)
+    const freeGoalies = freePlayers.filter((p) => p.canGoalie).map((p) => p.id)
+    const freeSkaters = freePlayers.filter((p) => !p.canGoalie).map((p) => p.id)
 
-    const shuffledGoalies = shuffle(freeGoalies, rand)
+    const chosenGoalies = pickFairGoalies(freeGoalies, goalieStats, rand)
     const shuffledSkaters = shuffle(freeSkaters, rand)
 
     // Place goalies
     const needsA = lockedGoaliesA.length === 0
     const needsB = lockedGoaliesB.length === 0
 
+    let goalieA: string | undefined
+    let goalieB: string | undefined
+
     if (needsA && needsB) {
-      if (shuffledGoalies.length >= 2) {
-        teamA.push(shuffledGoalies[0])
-        teamB.push(shuffledGoalies[1])
-        shuffledGoalies.splice(0, 2)
-      } else if (shuffledGoalies.length === 1) {
+      if (chosenGoalies.length >= 2) {
+        goalieA = chosenGoalies[0]
+        goalieB = chosenGoalies[1]
+        teamA.push(goalieA)
+        teamB.push(goalieB)
+        chosenGoalies.splice(0, 2)
+      } else if (chosenGoalies.length === 1) {
         // One goalie only
-        if (rand() < 0.5) teamA.push(shuffledGoalies[0])
-        else teamB.push(shuffledGoalies[0])
-        shuffledGoalies.splice(0, 1)
+        const g = chosenGoalies[0]
+        if (rand() < 0.5) {
+          goalieA = g
+          teamA.push(g)
+        } else {
+          goalieB = g
+          teamB.push(g)
+        }
+        chosenGoalies.splice(0, 1)
       }
     } else if (needsA && !needsB) {
-      if (shuffledGoalies.length >= 1) {
-        teamA.push(shuffledGoalies[0])
-        shuffledGoalies.splice(0, 1)
+      if (chosenGoalies.length >= 1) {
+        goalieA = chosenGoalies[0]
+        teamA.push(goalieA)
+        chosenGoalies.splice(0, 1)
       }
     } else if (!needsA && needsB) {
-      if (shuffledGoalies.length >= 1) {
-        teamB.push(shuffledGoalies[0])
-        shuffledGoalies.splice(0, 1)
+      if (chosenGoalies.length >= 1) {
+        goalieB = chosenGoalies[0]
+        teamB.push(goalieB)
+        chosenGoalies.splice(0, 1)
       }
     }
 
-    // Any remaining goalies are treated as skaters for balancing
-    const rest = [...shuffledGoalies, ...shuffledSkaters]
+    // Any remaining goalies are treated as skaters for balancing (U8 rotates)
+    const rest = [...chosenGoalies, ...shuffledSkaters]
 
     // Balance sizes to be as even as possible
     const totalTargetA = Math.ceil(selectedPlayers.length / 2)
@@ -147,7 +162,13 @@ export function randomizeTeams(args: RandomizeArgs): RandomizeResult {
     const isAvoided2 = avoidSplits.some((s) => isSameSplit(balanced, s))
     if (isAvoided2) continue
 
-    return { split: balanced, seed, warnings }
+    // Determine final goalie IDs (prefer explicitly chosen or locked)
+    const finalGoalies = {
+      A: lockedGoaliesA[0] ?? goalieA,
+      B: lockedGoaliesB[0] ?? goalieB
+    }
+
+    return { split: balanced, seed, warnings, goalies: finalGoalies }
   }
 
   warnings.push('Kunde inte hitta en unik lagindelning som skiljer sig från senaste historiken. Visar bästa försök ändå.')
@@ -191,4 +212,25 @@ function balanceIfNeeded(
 
   // Ensure at most one goalie per team? Not required; keep as is.
   return { teamA, teamB }
+}
+
+function pickFairGoalies(goalieIds: string[], stats: Record<string, GoalieStats>, rand: () => number): string[] {
+  const list = goalieIds.slice()
+  // Sort by: count asc, lastDate oldest first (null = oldest), then random tie-break
+  list.sort((a, b) => {
+    const sa = stats[a] ?? { count: 0, lastDateISO: null }
+    const sb = stats[b] ?? { count: 0, lastDateISO: null }
+    if (sa.count !== sb.count) return sa.count - sb.count
+    const da = sa.lastDateISO ?? ''
+    const db = sb.lastDateISO ?? ''
+    if (da !== db) {
+      // '' means never => should come first
+      if (da === '') return -1
+      if (db === '') return 1
+      return da.localeCompare(db)
+    }
+    // random tie-break
+    return rand() < 0.5 ? -1 : 1
+  })
+  return list
 }

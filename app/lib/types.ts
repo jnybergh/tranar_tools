@@ -1,7 +1,9 @@
 export type Player = {
   id: string
-  name: string
-  isGoalie: boolean
+  firstName: string
+  lastInitial: string // 1 bokstav
+  canGoalie: boolean
+  activeToday: boolean
 }
 
 export type TeamKey = 'A' | 'B'
@@ -19,4 +21,14 @@ export type Session = {
   dateISO: string   // YYYY-MM-DD
   note?: string
   split: TeamSplit
+  goalies?: {
+    A?: string
+    B?: string
+  }
 }
+
+export type GoalieStats = {
+  count: number
+  lastDateISO: string | null
+}
+
